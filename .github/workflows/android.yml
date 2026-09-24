@@ -88,15 +88,15 @@ jobs:
           if [ "$DAKIKA" -gt 330 ]; then DAKIKA=330; fi
           echo "DAKIKA=$DAKIKA" >> "$GITHUB_ENV"
 
-          # Makinenin çekirdek sayısına göre emülatör gücü (public: 4, özel: 2 çekirdek)
+          # Makinenin tamamı: bütün çekirdekler, RAM'in yaklaşık yarısı (kalanı yazılım GPU + akış)
           CEKIRDEK=$(nproc)
-          if [ "$CEKIRDEK" -ge 4 ]; then
-            echo "EMU_CORES=$((CEKIRDEK - 1))" >> "$GITHUB_ENV"
-            echo "EMU_RAM=4096" >> "$GITHUB_ENV"
-          else
-            echo "EMU_CORES=2" >> "$GITHUB_ENV"
-            echo "EMU_RAM=3072" >> "$GITHUB_ENV"
-          fi
+          RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+          if   [ "$RAM_MB" -ge 14000 ]; then EMU_RAM=8192
+          elif [ "$RAM_MB" -ge 7000  ]; then EMU_RAM=4096
+          else EMU_RAM=3072; fi
+          echo "EMU_CORES=$CEKIRDEK" >> "$GITHUB_ENV"
+          echo "EMU_RAM=$EMU_RAM"    >> "$GITHUB_ENV"
+          echo "Makine: $CEKIRDEK çekirdek / $RAM_MB MB → emülatör: $CEKIRDEK çekirdek, $EMU_RAM MB"
 
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
