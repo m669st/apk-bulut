@@ -1,6 +1,8 @@
-Test etmek istediğin .apk dosyalarını bu klasöre koy ve depoya gönder (git push).
-Her oturum başında hepsi otomatik kurulur.
+DIKKAT: Depo public ise bu klasore koydugun APK'lari herkes indirebilir.
+Kendi test APK'n gizli kalmali ise bu klasoru kullanma; baslatma sayfasindaki
+"APK linki" alanina indirme linkini yapistir (link loglarda maskelenir).
 
-Bölünmüş APK (split) için: apks/<uygulama-adi>/ klasörü aç, parçaları içine koy.
-GitHub 100 MB'tan büyük dosyaları kabul etmez; büyük APK için başlatma sayfasındaki
-"APK linki" alanını kullan.
+Kullanim: .apk dosyalarini bu klasore koy ve depoya gonder (git push).
+Her oturum basinda hepsi otomatik kurulur.
+Bolunmus APK (split) icin: apks/<uygulama-adi>/ klasoru ac, parcalari icine koy.
+GitHub 100 MB'tan buyuk dosyalari kabul etmez.

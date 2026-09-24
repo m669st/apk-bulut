@@ -2,6 +2,10 @@ name: Android
 
 run-name: "Android · ${{ inputs.dakika }} dk · ${{ inputs.goruntu }}"
 
+# Bu depo PUBLIC olabilir: loglar, özet, artifact'lar ve commit durumları herkese açıktır.
+# Bu yüzden oturum linki/şifreleri hiçbir yere açık yazılmaz; link, başlatma sayfasının
+# açık anahtarına şifrelenip commit durumuna konur (scripts/muhurle.js).
+
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +20,9 @@ on:
           - standart
           - hd
         default: standart
+      anahtar:
+        description: "Başlatma sayfası doldurur (açık anahtar). Elle başlatma desteklenmez."
+        required: true
       apk_url:
         description: "İsteğe bağlı: indirilip kurulacak APK linki (https://)"
         required: false
@@ -40,9 +47,9 @@ jobs:
     timeout-minutes: 350
     env:
       GH_TOKEN: ${{ github.token }}
+      # Gizli olmayan girdiler. apk_url ve anahtar olay dosyasından okunur (loglarda görünmesin).
       DAKIKA: ${{ inputs.dakika }}
       GORUNTU: ${{ inputs.goruntu }}
-      APK_URL: ${{ inputs.apk_url }}
       SDK_IMG: "system-images;android-35;google_apis;x86_64"
       EKRAN_W: "720"
       EKRAN_H: "1560"
@@ -58,12 +65,39 @@ jobs:
       - name: Hazırlık
         run: |
           bash scripts/durum.sh pending "Hazırlanıyor"
+          umask 077
+          mkdir -p /tmp/oturum
+
+          ANAHTAR=$(jq -r '.inputs.anahtar // ""' "$GITHUB_EVENT_PATH")
+          if ! [[ "$ANAHTAR" =~ ^[A-Za-z0-9_-]{87}$ ]]; then
+            echo "::error::Geçersiz anahtar. Oturumu başlatma sayfasından başlat."
+            exit 1
+          fi
+          printf '%s' "$ANAHTAR" > /tmp/oturum/anahtar
+
+          APK_URL=$(jq -r '.inputs.apk_url // ""' "$GITHUB_EVENT_PATH")
+          if [ -n "$APK_URL" ]; then
+            echo "::add-mask::$APK_URL"
+            printf '%s' "$APK_URL" > /tmp/oturum/apk_url
+          fi
+
           case "$DAKIKA" in
             ''|*[!0-9]*) echo "::error::dakika bir sayı olmalı"; exit 1 ;;
           esac
           if [ "$DAKIKA" -lt 5 ]; then DAKIKA=5; fi
           if [ "$DAKIKA" -gt 330 ]; then DAKIKA=330; fi
           echo "DAKIKA=$DAKIKA" >> "$GITHUB_ENV"
+
+          # Makinenin çekirdek sayısına göre emülatör gücü (public: 4, özel: 2 çekirdek)
+          CEKIRDEK=$(nproc)
+          if [ "$CEKIRDEK" -ge 4 ]; then
+            echo "EMU_CORES=$((CEKIRDEK - 1))" >> "$GITHUB_ENV"
+            echo "EMU_RAM=4096" >> "$GITHUB_ENV"
+          else
+            echo "EMU_CORES=2" >> "$GITHUB_ENV"
+            echo "EMU_RAM=3072" >> "$GITHUB_ENV"
+          fi
+
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
           sudo udevadm control --reload-rules
@@ -108,7 +142,8 @@ jobs:
           ayarla hw.lcd.width "$EKRAN_W"
           ayarla hw.lcd.height "$EKRAN_H"
           ayarla hw.lcd.density "$EKRAN_DPI"
-          ayarla hw.ramSize 3072
+          ayarla hw.ramSize "$EMU_RAM"
+          ayarla hw.cpu.ncore "$EMU_CORES"
           ayarla hw.keyboard yes
           ayarla hw.mainKeys no
           ayarla disk.dataPartition.size 6G
@@ -119,7 +154,7 @@ jobs:
           if [ "$GORUNTU" = "hd" ]; then SES=""; fi
           nohup "$ANDROID_HOME/emulator/emulator" -avd dev -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-boot-anim -camera-back none -camera-front none \
-            -cores 2 -memory 3072 $SES > /tmp/emulator.log 2>&1 &
+            -cores "$EMU_CORES" -memory "$EMU_RAM" $SES > /tmp/emulator.log 2>&1 &
 
           timeout 300 "$ADB" wait-for-device \
             || { echo "::error::Emülatör bağlanmadı"; tail -80 /tmp/emulator.log; exit 1; }
@@ -156,16 +191,29 @@ jobs:
               "$ADB" install-multiple -r -g "${parcalar[@]}" || echo "::warning::Kurulamadı: $d"
             fi
           done
-          if [ -n "$APK_URL" ]; then
+          if [ -s /tmp/oturum/apk_url ]; then
+            APK_URL=$(cat /tmp/oturum/apk_url)
+            echo "::add-mask::$APK_URL"
             case "$APK_URL" in
               https://*)
-                curl -fL --retry 3 -o /tmp/indirilen.apk "$APK_URL" \
-                  && "$ADB" install -r -g /tmp/indirilen.apk \
+                echo "Linkteki APK indiriliyor"
+                curl -fsL --retry 3 -o /tmp/oturum/indirilen.apk "$APK_URL" \
+                  && "$ADB" install -r -g /tmp/oturum/indirilen.apk \
                   || echo "::warning::Linkteki APK kurulamadı"
                 ;;
               *) echo "::warning::APK linki https:// ile başlamalı" ;;
             esac
           fi
+
+      - name: Oturum sırları
+        run: |
+          umask 077
+          SIR=$(openssl rand -base64 16 | tr '+/' '-_' | tr -d '=\r\n')
+          echo "::add-mask::$SIR"
+          printf '%s' "$SIR" > /tmp/oturum/sir
+          VNC_PW=$(openssl rand -hex 4)
+          echo "::add-mask::$VNC_PW"
+          printf '%s' "$VNC_PW" > /tmp/oturum/vnc_pw
 
       - name: Görüntü (standart)
         if: env.GORUNTU == 'standart'
@@ -182,19 +230,29 @@ jobs:
           SCR_DIR="/tmp/scrcpy-linux-x86_64-${SCRCPY_VER}" ADB="$ADB" SERIAL="$SERIAL" \
             nohup bash scripts/scrcpy-dongu.sh > /tmp/scrcpy.log 2>&1 &
 
-          VNC_PW=$(openssl rand -hex 4)
+          VNC_PW=$(cat /tmp/oturum/vnc_pw)
           x11vnc -display :1 -rfbport 5900 -localhost -forever -shared \
-            -passwd "$VNC_PW" -noxdamage -bg -o /tmp/x11vnc.log
-          nohup websockify --web /usr/share/novnc 6080 localhost:5900 > /tmp/websockify.log 2>&1 &
+            -passwd "$VNC_PW" -noxdamage -bg -o /tmp/oturum/x11vnc.log > /dev/null 2>&1
+          nohup websockify --web /usr/share/novnc 127.0.0.1:6080 localhost:5900 > /tmp/oturum/websockify.log 2>&1 &
 
-          HOST=$(bash scripts/tunel.sh 6080 /vnc.html)
-          echo "LINK=https://${HOST}/vnc.html?autoconnect=true&resize=scale&reconnect=true&quality=6&compression=2&password=${VNC_PW}" >> "$GITHUB_ENV"
+          bash scripts/kapi.sh 6080 "/vnc.html?autoconnect=true&resize=scale&reconnect=true&quality=6&compression=2&password=${VNC_PW}"
+          HOST=$(bash scripts/tunel.sh 8080 /)
+          echo "::add-mask::$HOST"
+          echo "::add-mask::${HOST%%.*}"
+          printf '%s' "$HOST" > /tmp/oturum/host
+          printf 's' > /tmp/oturum/mod
 
       - name: Görüntü (HD, deneysel)
         if: env.GORUNTU == 'hd'
         run: |
           bash scripts/durum.sh pending "Görüntü hazırlanıyor"
-          HOST=$(bash scripts/tunel.sh 8000 -)
+          bash scripts/kapi.sh 8000 "/"
+          HOST=$(bash scripts/tunel.sh 8080 /)
+          echo "::add-mask::$HOST"
+          echo "::add-mask::${HOST%%.*}"
+          printf '%s' "$HOST" > /tmp/oturum/host
+          printf 'h' > /tmp/oturum/mod
+
           mkdir -p /tmp/wsdata
           jq -n --arg h "$HOST" \
             '{allowedHosts: [$h], adbPath: "/sdk-pt/adb", firstRunComplete: true, autoUpdate: false}' \
@@ -209,21 +267,26 @@ jobs:
           done
           curl -fs -o /dev/null http://127.0.0.1:8000/api/config \
             || { echo "::error::ws-scrcpy-web açılmadı"; docker logs wsw 2>&1 | tail -80; exit 1; }
-          echo "LINK=https://${HOST}/" >> "$GITHUB_ENV"
 
       - name: Hazır
         run: |
+          HOST=$(cat /tmp/oturum/host)
+          SIR=$(cat /tmp/oturum/sir)
+          MOD=$(cat /tmp/oturum/mod)
+          echo "::add-mask::$HOST"
+          echo "::add-mask::$SIR"
+          # Başlatma sayfası bu metni çözüp https://<alt>.trycloudflare.com/giris?k=<sır> linkini kurar.
+          MUHUR=$(printf '%s|%s|%s' "$MOD" "${HOST%%.*}" "$SIR" \
+            | node scripts/muhurle.js "$(cat /tmp/oturum/anahtar)")
           BITIS=$(( $(date +%s) + DAKIKA * 60 ))
           echo "BITIS=$BITIS" >> "$GITHUB_ENV"
-          bash scripts/durum.sh success "hazir;bitis=$BITIS" "$LINK"
+          # target_url kısa tutulur (~220 karakter); mühür # sonrasında taşınır.
+          bash scripts/durum.sh success "hazir;bitis=$BITIS" "https://github.com/#${MUHUR}"
           {
             echo "## Android hazır"
             echo ""
-            echo "[Android'i aç]($LINK)"
-            echo ""
-            echo "Oturum yaklaşık $DAKIKA dakika açık kalacak."
+            echo "Linki başlatma sayfasından aç. Oturum yaklaşık $DAKIKA dakika açık kalacak."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Link: $LINK"
 
       - name: Oturum açık
         run: |
@@ -244,11 +307,18 @@ jobs:
         if: always()
         run: bash scripts/durum.sh error "Oturum bitti" || true
 
+      # Yalnızca gizli bilgi içermeyen günlükler (tünel/kapı/VNC günlükleri /tmp/oturum'da kalır).
       - name: Günlükleri kaydet
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: gunlukler
-          path: /tmp/*.log
+          path: |
+            /tmp/sdk.log
+            /tmp/apt.log
+            /tmp/docker-pull.log
+            /tmp/emulator.log
+            /tmp/scrcpy.log
+            /tmp/xvfb.log
           retention-days: 3
           if-no-files-found: ignore

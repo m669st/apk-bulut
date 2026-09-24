@@ -1,6 +1,7 @@
-// Jetonu bir şifreyle şifreleyip başlatma sitesinin config.js dosyasını üretir.
-// Jeton bu bilgisayardan çıkmaz; sitede yalnızca şifreli hâli durur.
-// Kullanım: node araclar\sifrele.js
+// Jetonu ve oturum linklerini açan özel anahtarı bir şifreyle şifreleyip
+// başlatma sitesinin config.js dosyasını üretir. Jeton bu bilgisayardan çıkmaz;
+// sitede (public) yalnızca şifreli hâli durur.
+// Kullanım: node araclar\sifrele.js      (GHUSER ortam değişkeni varsa kullanıcı adı sorulmaz)
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -25,13 +26,24 @@ function sor(soru, gizli = false) {
   });
 }
 
+// Oturum linklerinin şifrelendiği ECDH P-256 anahtar çifti. Açık anahtar iş akışına girdi
+// olarak gider (açık olabilir); özel anahtar yalnızca şifreli config.js içinde durur.
+function anahtarCifti() {
+  const { privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const jwk = privateKey.export({ format: 'jwk' });
+  const pub = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]);
+  return { jwk, pub: pub.toString('base64url') };
+}
+
 // Tarayıcıdaki WebCrypto ile açılabilen biçim: PBKDF2-SHA256 → AES-256-GCM (şifreli veri + etiket).
-function sifrele(token, sifre, repo) {
+// Şifreli içerik: {"t": jeton, "k": özel anahtar (JWK), "p": açık anahtar (base64url)}
+function sifrele(token, sifre, repo, cift = anahtarCifti()) {
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
   const anahtar = crypto.pbkdf2Sync(sifre, salt, ITER, 32, 'sha256');
   const c = crypto.createCipheriv('aes-256-gcm', anahtar, iv);
-  const veri = Buffer.concat([c.update(token, 'utf8'), c.final(), c.getAuthTag()]);
+  const icerik = JSON.stringify({ t: token, k: cift.jwk, p: cift.pub });
+  const veri = Buffer.concat([c.update(icerik, 'utf8'), c.final(), c.getAuthTag()]);
   return {
     repo,
     iter: ITER,
@@ -40,7 +52,7 @@ function sifrele(token, sifre, repo) {
     veri: veri.toString('base64'),
   };
 }
-module.exports = { sifrele };
+module.exports = { sifrele, anahtarCifti };
 
 async function gh(yol, token) {
   const res = await fetch('https://api.github.com' + yol, {
@@ -50,8 +62,10 @@ async function gh(yol, token) {
 }
 
 if (require.main === module) (async () => {
-  let kullanici = '';
-  try { kullanici = execSync('gh api user --jq .login', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* gh yok */ }
+  let kullanici = (process.env.GHUSER || '').trim();
+  if (!kullanici) {
+    try { kullanici = execSync('gh api user --jq .login', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* gh yok */ }
+  }
   if (!kullanici) kullanici = await sor('GitHub kullanıcı adın: ');
   const repo = kullanici + '/' + DEPO_ADI;
   console.log('Depo: ' + repo);
