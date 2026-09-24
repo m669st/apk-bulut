@@ -1,0 +1,254 @@
+name: Android
+
+run-name: "Android · ${{ inputs.dakika }} dk · ${{ inputs.goruntu }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      dakika:
+        description: "Oturum süresi (dakika, 5-330)"
+        required: true
+        default: "60"
+      goruntu:
+        description: "Görüntü modu (standart = noVNC, hd = ws-scrcpy-web, deneysel)"
+        type: choice
+        options:
+          - standart
+          - hd
+        default: standart
+      apk_url:
+        description: "İsteğe bağlı: indirilip kurulacak APK linki (https://)"
+        required: false
+        default: ""
+
+# Aynı anda tek oturum; ikinci başlatma sıraya girer.
+concurrency:
+  group: android-oturum
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  statuses: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DAKIKA: ${{ inputs.dakika }}
+      GORUNTU: ${{ inputs.goruntu }}
+      APK_URL: ${{ inputs.apk_url }}
+      SDK_IMG: "system-images;android-35;google_apis;x86_64"
+      EKRAN_W: "720"
+      EKRAN_H: "1560"
+      EKRAN_DPI: "320"
+      SCRCPY_VER: "v4.1"
+      WSW_IMAGE: "bilbospocketses/ws-scrcpy-web:0.1.30-beta.131"
+      ANDROID_AVD_HOME: /home/runner/.android/avd
+
+    steps:
+      - name: Depoyu al
+        uses: actions/checkout@v7
+
+      - name: Hazırlık
+        run: |
+          bash scripts/durum.sh pending "Hazırlanıyor"
+          case "$DAKIKA" in
+            ''|*[!0-9]*) echo "::error::dakika bir sayı olmalı"; exit 1 ;;
+          esac
+          if [ "$DAKIKA" -lt 5 ]; then DAKIKA=5; fi
+          if [ "$DAKIKA" -gt 330 ]; then DAKIKA=330; fi
+          echo "DAKIKA=$DAKIKA" >> "$GITHUB_ENV"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Android SDK ve paketler
+        run: |
+          bash scripts/durum.sh pending "Android indiriliyor"
+          if [ "$GORUNTU" = "standart" ]; then
+            ( sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+              && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                   xvfb x11vnc novnc websockify \
+                   libxkbcommon0 libxcursor1 libxi6 libxrandr2 libxfixes3 libxss1 libegl1 libgl1 \
+            ) > /tmp/apt.log 2>&1 &
+          else
+            docker pull -q "$WSW_IMAGE" > /tmp/docker-pull.log 2>&1 &
+          fi
+          ARKA_PID=$!
+
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install emulator platform-tools "$SDK_IMG" > /tmp/sdk.log 2>&1 \
+            || { tail -50 /tmp/sdk.log; exit 1; }
+
+          wait "$ARKA_PID" || { tail -50 /tmp/apt.log /tmp/docker-pull.log 2>/dev/null; exit 1; }
+
+          curl -fsSL -o /tmp/cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x /tmp/cloudflared
+
+      - name: Android'i başlat
+        run: |
+          bash scripts/durum.sh pending "Android açılıyor"
+          AVDM="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$AVDM" create avd -n dev -k "$SDK_IMG" --force > /dev/null
+
+          CFG="$ANDROID_AVD_HOME/dev.avd/config.ini"
+          ayarla() { sed -i "/^$1=/d" "$CFG"; echo "$1=$2" >> "$CFG"; }
+          ayarla hw.lcd.width "$EKRAN_W"
+          ayarla hw.lcd.height "$EKRAN_H"
+          ayarla hw.lcd.density "$EKRAN_DPI"
+          ayarla hw.ramSize 3072
+          ayarla hw.keyboard yes
+          ayarla hw.mainKeys no
+          ayarla disk.dataPartition.size 6G
+          ayarla hw.gpu.enabled yes
+          ayarla hw.gpu.mode swiftshader_indirect
+
+          SES="-no-audio"
+          if [ "$GORUNTU" = "hd" ]; then SES=""; fi
+          nohup "$ANDROID_HOME/emulator/emulator" -avd dev -no-window -gpu swiftshader_indirect \
+            -no-snapshot -no-boot-anim -camera-back none -camera-front none \
+            -cores 2 -memory 3072 $SES > /tmp/emulator.log 2>&1 &
+
+          timeout 300 "$ADB" wait-for-device \
+            || { echo "::error::Emülatör bağlanmadı"; tail -80 /tmp/emulator.log; exit 1; }
+          acildi() { [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; }
+          for i in $(seq 1 200); do
+            if acildi; then break; fi
+            sleep 3
+          done
+          acildi || { echo "::error::Android açılamadı"; tail -80 /tmp/emulator.log; exit 1; }
+
+          "$ADB" shell settings put global window_animation_scale 0.5 || true
+          "$ADB" shell settings put global transition_animation_scale 0.5 || true
+          "$ADB" shell settings put global animator_duration_scale 0.5 || true
+          "$ADB" shell svc power stayon true || true
+          "$ADB" shell settings put system screen_off_timeout 2147483647 || true
+          "$ADB" shell cmd overlay enable com.android.internal.systemui.navbar.threebutton || true
+          "$ADB" shell wm dismiss-keyguard || true
+          echo "Android açıldı."
+
+      - name: APK'ları kur
+        run: |
+          bash scripts/durum.sh pending "Uygulamalar kuruluyor"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          shopt -s nullglob
+          for f in apks/*.apk; do
+            echo "Kuruluyor: $f"
+            "$ADB" install -r -g "$f" || echo "::warning::Kurulamadı: $f"
+          done
+          # Bölünmüş APK'lar: apks/<klasör>/*.apk
+          for d in apks/*/; do
+            parcalar=("$d"*.apk)
+            if [ ${#parcalar[@]} -gt 0 ]; then
+              echo "Kuruluyor (bölünmüş): $d"
+              "$ADB" install-multiple -r -g "${parcalar[@]}" || echo "::warning::Kurulamadı: $d"
+            fi
+          done
+          if [ -n "$APK_URL" ]; then
+            case "$APK_URL" in
+              https://*)
+                curl -fL --retry 3 -o /tmp/indirilen.apk "$APK_URL" \
+                  && "$ADB" install -r -g /tmp/indirilen.apk \
+                  || echo "::warning::Linkteki APK kurulamadı"
+                ;;
+              *) echo "::warning::APK linki https:// ile başlamalı" ;;
+            esac
+          fi
+
+      - name: Görüntü (standart)
+        if: env.GORUNTU == 'standart'
+        run: |
+          bash scripts/durum.sh pending "Görüntü hazırlanıyor"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          SERIAL=$("$ADB" devices | awk '/^emulator-/{print $1; exit}')
+
+          Xvfb :1 -screen 0 "${EKRAN_W}x${EKRAN_H}x24" -nolisten tcp > /tmp/xvfb.log 2>&1 &
+          for i in $(seq 1 50); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.2; done
+
+          curl -fsSL "https://github.com/Genymobile/scrcpy/releases/download/${SCRCPY_VER}/scrcpy-linux-x86_64-${SCRCPY_VER}.tar.gz" \
+            | tar -xz -C /tmp
+          SCR_DIR="/tmp/scrcpy-linux-x86_64-${SCRCPY_VER}" ADB="$ADB" SERIAL="$SERIAL" \
+            nohup bash scripts/scrcpy-dongu.sh > /tmp/scrcpy.log 2>&1 &
+
+          VNC_PW=$(openssl rand -hex 4)
+          x11vnc -display :1 -rfbport 5900 -localhost -forever -shared \
+            -passwd "$VNC_PW" -noxdamage -bg -o /tmp/x11vnc.log
+          nohup websockify --web /usr/share/novnc 6080 localhost:5900 > /tmp/websockify.log 2>&1 &
+
+          HOST=$(bash scripts/tunel.sh 6080 /vnc.html)
+          echo "LINK=https://${HOST}/vnc.html?autoconnect=true&resize=scale&reconnect=true&quality=6&compression=2&password=${VNC_PW}" >> "$GITHUB_ENV"
+
+      - name: Görüntü (HD, deneysel)
+        if: env.GORUNTU == 'hd'
+        run: |
+          bash scripts/durum.sh pending "Görüntü hazırlanıyor"
+          HOST=$(bash scripts/tunel.sh 8000 -)
+          mkdir -p /tmp/wsdata
+          jq -n --arg h "$HOST" \
+            '{allowedHosts: [$h], adbPath: "/sdk-pt/adb", firstRunComplete: true, autoUpdate: false}' \
+            > /tmp/wsdata/config.json
+          docker run -d --name wsw --network host \
+            -v /tmp/wsdata:/data \
+            -v "$ANDROID_HOME/platform-tools:/sdk-pt:ro" \
+            "$WSW_IMAGE" > /dev/null
+          for i in $(seq 1 90); do
+            curl -fs -o /dev/null http://127.0.0.1:8000/api/config && break
+            sleep 2
+          done
+          curl -fs -o /dev/null http://127.0.0.1:8000/api/config \
+            || { echo "::error::ws-scrcpy-web açılmadı"; docker logs wsw 2>&1 | tail -80; exit 1; }
+          echo "LINK=https://${HOST}/" >> "$GITHUB_ENV"
+
+      - name: Hazır
+        run: |
+          BITIS=$(( $(date +%s) + DAKIKA * 60 ))
+          echo "BITIS=$BITIS" >> "$GITHUB_ENV"
+          bash scripts/durum.sh success "hazir;bitis=$BITIS" "$LINK"
+          {
+            echo "## Android hazır"
+            echo ""
+            echo "[Android'i aç]($LINK)"
+            echo ""
+            echo "Oturum yaklaşık $DAKIKA dakika açık kalacak."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Link: $LINK"
+
+      - name: Oturum açık
+        run: |
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          hata=0
+          while [ "$(date +%s)" -lt "$BITIS" ]; do
+            sleep 30
+            if "$ADB" get-state > /dev/null 2>&1; then
+              hata=0
+            else
+              hata=$((hata + 1))
+              if [ "$hata" -ge 3 ]; then echo "::error::Android bağlantısı koptu"; exit 1; fi
+            fi
+          done
+          echo "Süre doldu."
+
+      - name: Kapanış
+        if: always()
+        run: bash scripts/durum.sh error "Oturum bitti" || true
+
+      - name: Günlükleri kaydet
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gunlukler
+          path: /tmp/*.log
+          retention-days: 3
+          if-no-files-found: ignore
