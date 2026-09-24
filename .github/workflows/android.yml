@@ -1,6 +1,6 @@
 name: Android
 
-run-name: "Android · ${{ inputs.dakika }} dk · ${{ inputs.goruntu }}"
+run-name: "Android · ${{ inputs.dakika }} dk"
 
 # Bu depo PUBLIC olabilir: loglar, özet, artifact'lar ve commit durumları herkese açıktır.
 # Bu yüzden oturum linki/şifreleri hiçbir yere açık yazılmaz; link, başlatma sayfasının
@@ -224,7 +224,7 @@ jobs:
           ADB="$ADB" SERIAL="$SERIAL" nohup node scripts/kontrol.js > /tmp/oturum/kontrol.log 2>&1 &
 
           bash scripts/kapi.sh 8000
-          HOST=$(bash scripts/tunel.sh 8080 -)
+          HOST=$(bash scripts/tunel.sh 8080 /)   # kapı / için 403 döner; tünel DNS+erişim hazır olana kadar bekler
           echo "::add-mask::$HOST"
           echo "::add-mask::${HOST%%.*}"
           printf '%s' "$HOST" > /tmp/oturum/host
