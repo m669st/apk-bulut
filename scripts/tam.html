@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Android</title>
+<!-- Kapı bu sayfayı /k/<sır>/tam.html adresinde sunar; göreli yollar da aynı önekin altından yüklenir. -->
+<link rel="stylesheet" href="ws-scrcpy.css">
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; touch-action: none; overscroll-behavior: none; }
+  body[data-embed-entry] .device-view { flex: 1; justify-content: center; }
+  /* Gezinme tuşları başlatma sayfasının kendi çubuğunda; uygulamanın araç çubuğunu gizle. */
+  .control-buttons-list { display: none !important; }
+  .video { flex: 1; }
+  .video-layer, .touch-layer { max-width: 100vw !important; max-height: 100vh !important; }
+  #status {
+    position: fixed; top: 8px; left: 8px; z-index: 1000;
+    font: 12px monospace; color: #ddd; background: rgba(0,0,0,.5);
+    padding: 4px 8px; border-radius: 4px; pointer-events: none;
+  }
+  #status.hidden { display: none; }
+</style>
+<script>
+  // Akış soketi uygulamada her zaman köke ("/") açılır ve pathname ayarını yok sayar.
+  // Kapı ise yalnızca /k/<sır>/ altını geçirir. Bu sayfanın bulunduğu önek altına yönlendir.
+  (function () {
+    var onek = location.pathname.replace(/[^/]*$/, '');          // "/k/<sır>/"
+    function duzelt(adres) {
+      var u = new URL(adres, location.href);
+      if (u.host === location.host && u.pathname.indexOf(onek) !== 0) {
+        u.pathname = onek + u.pathname.replace(/^\//, '');
+      }
+      return u.toString();
+    }
+    var AsilSoket = window.WebSocket;
+    window.WebSocket = class extends AsilSoket {
+      constructor(adres, protokoller) {
+        if (protokoller === undefined) super(duzelt(adres));
+        else super(duzelt(adres), protokoller);
+      }
+    };
+    // Uygulamanın kök API istekleri (ör. kilit ekranı durumu) de aynı önekten geçsin.
+    var asilFetch = window.fetch.bind(window);
+    window.fetch = function (girdi, secenek) {
+      if (typeof girdi === 'string') return asilFetch(duzelt(girdi), secenek);
+      if (girdi instanceof URL) return asilFetch(duzelt(girdi.toString()), secenek);
+      return asilFetch(girdi, secenek);
+    };
+  })();
+</script>
+</head>
+<body data-embed-entry>
+  <div id="status">connecting...</div>
+  <script src="ws-scrcpy.umd.js"></script>
+  <script src="embed.js"></script>
+</body>
+</html>

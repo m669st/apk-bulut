@@ -18,6 +18,9 @@ if [ ! -x /tmp/caddy ]; then
 fi
 
 umask 077
+# Tam ekran sayfası (akış soketini /k/<sır>/ altına yönlendirir); sır içermez, depodan kopyalanır.
+mkdir -p /tmp/oturum/web
+cp "$(dirname "$0")/tam.html" /tmp/oturum/web/tam.html
 cat > /tmp/oturum/Caddyfile <<EOF
 {
 	admin off
@@ -36,6 +39,10 @@ cat > /tmp/oturum/Caddyfile <<EOF
 		header -Content-Security-Policy
 		handle_path /_ctl/* {
 			reverse_proxy 127.0.0.1:8001
+		}
+		handle /tam.html {
+			root * /tmp/oturum/web
+			file_server
 		}
 		handle {
 			reverse_proxy 127.0.0.1:${arka} {
