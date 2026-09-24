@@ -13,13 +13,6 @@ on:
         description: "Oturum süresi (dakika, 5-330)"
         required: true
         default: "60"
-      goruntu:
-        description: "Görüntü modu (standart = noVNC, hd = ws-scrcpy-web, deneysel)"
-        type: choice
-        options:
-          - standart
-          - hd
-        default: standart
       anahtar:
         description: "Başlatma sayfası doldurur (açık anahtar). Elle başlatma desteklenmez."
         required: true
@@ -49,12 +42,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       # Gizli olmayan girdiler. apk_url ve anahtar olay dosyasından okunur (loglarda görünmesin).
       DAKIKA: ${{ inputs.dakika }}
-      GORUNTU: ${{ inputs.goruntu }}
       SDK_IMG: "system-images;android-35;google_apis;x86_64"
       EKRAN_W: "720"
       EKRAN_H: "1560"
       EKRAN_DPI: "320"
-      SCRCPY_VER: "v4.1"
       WSW_IMAGE: "bilbospocketses/ws-scrcpy-web:0.1.30-beta.131"
       ANDROID_AVD_HOME: /home/runner/.android/avd
 
@@ -107,15 +98,7 @@ jobs:
       - name: Android SDK ve paketler
         run: |
           bash scripts/durum.sh pending "Android indiriliyor"
-          if [ "$GORUNTU" = "standart" ]; then
-            ( sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
-              && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-                   xvfb x11vnc novnc websockify \
-                   libxkbcommon0 libxcursor1 libxi6 libxrandr2 libxfixes3 libxss1 libegl1 libgl1 \
-            ) > /tmp/apt.log 2>&1 &
-          else
-            docker pull -q "$WSW_IMAGE" > /tmp/docker-pull.log 2>&1 &
-          fi
+          docker pull -q "$WSW_IMAGE" > /tmp/docker-pull.log 2>&1 &
           ARKA_PID=$!
 
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -123,7 +106,7 @@ jobs:
           "$SDKM" --install emulator platform-tools "$SDK_IMG" > /tmp/sdk.log 2>&1 \
             || { tail -50 /tmp/sdk.log; exit 1; }
 
-          wait "$ARKA_PID" || { tail -50 /tmp/apt.log /tmp/docker-pull.log 2>/dev/null; exit 1; }
+          wait "$ARKA_PID" || { tail -50 /tmp/docker-pull.log 2>/dev/null; exit 1; }
 
           curl -fsSL -o /tmp/cloudflared \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
@@ -150,11 +133,9 @@ jobs:
           ayarla hw.gpu.enabled yes
           ayarla hw.gpu.mode swiftshader_indirect
 
-          SES="-no-audio"
-          if [ "$GORUNTU" = "hd" ]; then SES=""; fi
           nohup "$ANDROID_HOME/emulator/emulator" -avd dev -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-boot-anim -camera-back none -camera-front none \
-            -cores "$EMU_CORES" -memory "$EMU_RAM" $SES > /tmp/emulator.log 2>&1 &
+            -cores "$EMU_CORES" -memory "$EMU_RAM" > /tmp/emulator.log 2>&1 &
 
           timeout 300 "$ADB" wait-for-device \
             || { echo "::error::Emülatör bağlanmadı"; tail -80 /tmp/emulator.log; exit 1; }
@@ -211,52 +192,16 @@ jobs:
           SIR=$(openssl rand -base64 16 | tr '+/' '-_' | tr -d '=\r\n')
           echo "::add-mask::$SIR"
           printf '%s' "$SIR" > /tmp/oturum/sir
-          VNC_PW=$(openssl rand -hex 4)
-          echo "::add-mask::$VNC_PW"
-          printf '%s' "$VNC_PW" > /tmp/oturum/vnc_pw
 
-      - name: Görüntü (standart)
-        if: env.GORUNTU == 'standart'
+      - name: Görüntü
         run: |
           bash scripts/durum.sh pending "Görüntü hazırlanıyor"
           ADB="$ANDROID_HOME/platform-tools/adb"
           SERIAL=$("$ADB" devices | awk '/^emulator-/{print $1; exit}')
 
-          Xvfb :1 -screen 0 "${EKRAN_W}x${EKRAN_H}x24" -nolisten tcp > /tmp/xvfb.log 2>&1 &
-          for i in $(seq 1 50); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.2; done
-
-          curl -fsSL "https://github.com/Genymobile/scrcpy/releases/download/${SCRCPY_VER}/scrcpy-linux-x86_64-${SCRCPY_VER}.tar.gz" \
-            | tar -xz -C /tmp
-          SCR_DIR="/tmp/scrcpy-linux-x86_64-${SCRCPY_VER}" ADB="$ADB" SERIAL="$SERIAL" \
-            nohup bash scripts/scrcpy-dongu.sh > /tmp/scrcpy.log 2>&1 &
-
-          VNC_PW=$(cat /tmp/oturum/vnc_pw)
-          x11vnc -display :1 -rfbport 5900 -localhost -forever -shared \
-            -passwd "$VNC_PW" -noxdamage -bg -o /tmp/oturum/x11vnc.log > /dev/null 2>&1
-          nohup websockify --web /usr/share/novnc 127.0.0.1:6080 localhost:5900 > /tmp/oturum/websockify.log 2>&1 &
-
-          bash scripts/kapi.sh 6080 "/vnc.html?autoconnect=true&resize=scale&reconnect=true&quality=6&compression=2&password=${VNC_PW}"
-          HOST=$(bash scripts/tunel.sh 8080 /)
-          echo "::add-mask::$HOST"
-          echo "::add-mask::${HOST%%.*}"
-          printf '%s' "$HOST" > /tmp/oturum/host
-          printf 's' > /tmp/oturum/mod
-
-      - name: Görüntü (HD, deneysel)
-        if: env.GORUNTU == 'hd'
-        run: |
-          bash scripts/durum.sh pending "Görüntü hazırlanıyor"
-          bash scripts/kapi.sh 8000 "/"
-          HOST=$(bash scripts/tunel.sh 8080 /)
-          echo "::add-mask::$HOST"
-          echo "::add-mask::${HOST%%.*}"
-          printf '%s' "$HOST" > /tmp/oturum/host
-          printf 'h' > /tmp/oturum/mod
-
+          # ws-scrcpy-web (host ağında; dışarıya sadece kapı üzerinden açılır)
           mkdir -p /tmp/wsdata
-          jq -n --arg h "$HOST" \
-            '{allowedHosts: [$h], adbPath: "/sdk-pt/adb", firstRunComplete: true, autoUpdate: false}' \
-            > /tmp/wsdata/config.json
+          echo '{"adbPath":"/sdk-pt/adb","firstRunComplete":true,"autoUpdate":false}' > /tmp/wsdata/config.json
           docker run -d --name wsw --network host \
             -v /tmp/wsdata:/data \
             -v "$ANDROID_HOME/platform-tools:/sdk-pt:ro" \
@@ -268,15 +213,31 @@ jobs:
           curl -fs -o /dev/null http://127.0.0.1:8000/api/config \
             || { echo "::error::ws-scrcpy-web açılmadı"; docker logs wsw 2>&1 | tail -80; exit 1; }
 
+          # Uygulamanın bu açılışa özel oturum jetonunu loopback'ten al (kapı bunu enjekte eder)
+          WSW_TOKEN=$(curl -sI http://127.0.0.1:8000/ \
+            | tr -d '\r' | sed -n 's/.*ws_scrcpy_token=\([0-9a-f]\{64\}\).*/\1/p' | head -1)
+          if [ -z "$WSW_TOKEN" ]; then echo "::error::Uygulama jetonu alınamadı"; exit 1; fi
+          echo "::add-mask::$WSW_TOKEN"
+          printf '%s' "$WSW_TOKEN" > /tmp/oturum/wsw_token
+
+          # Ekran döndürme / gezinme tuşları için kontrol sunucusu
+          ADB="$ADB" SERIAL="$SERIAL" nohup node scripts/kontrol.js > /tmp/oturum/kontrol.log 2>&1 &
+
+          bash scripts/kapi.sh 8000
+          HOST=$(bash scripts/tunel.sh 8080 -)
+          echo "::add-mask::$HOST"
+          echo "::add-mask::${HOST%%.*}"
+          printf '%s' "$HOST" > /tmp/oturum/host
+
       - name: Hazır
         run: |
           HOST=$(cat /tmp/oturum/host)
           SIR=$(cat /tmp/oturum/sir)
-          MOD=$(cat /tmp/oturum/mod)
           echo "::add-mask::$HOST"
           echo "::add-mask::$SIR"
-          # Başlatma sayfası bu metni çözüp https://<alt>.trycloudflare.com/giris?k=<sır> linkini kurar.
-          MUHUR=$(printf '%s|%s|%s' "$MOD" "${HOST%%.*}" "$SIR" \
+          # Başlatma sayfası bu metni çözüp akışı https://<alt>.trycloudflare.com/k/<sır>/ altında
+          # kendi sayfasına iframe ile gömer. 'h' = HD embed modu.
+          MUHUR=$(printf 'h|%s|%s' "${HOST%%.*}" "$SIR" \
             | node scripts/muhurle.js "$(cat /tmp/oturum/anahtar)")
           BITIS=$(( $(date +%s) + DAKIKA * 60 ))
           echo "BITIS=$BITIS" >> "$GITHUB_ENV"
@@ -315,10 +276,8 @@ jobs:
           name: gunlukler
           path: |
             /tmp/sdk.log
-            /tmp/apt.log
             /tmp/docker-pull.log
             /tmp/emulator.log
-            /tmp/scrcpy.log
-            /tmp/xvfb.log
+            /tmp/oturum/kontrol.log
           retention-days: 3
           if-no-files-found: ignore
