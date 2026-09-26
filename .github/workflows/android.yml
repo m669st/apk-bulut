@@ -42,7 +42,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       # Gizli olmayan girdiler. apk_url ve anahtar olay dosyasından okunur (loglarda görünmesin).
       DAKIKA: ${{ inputs.dakika }}
-      SDK_IMG: "system-images;android-35;google_apis;x86_64"
+      # Android 11: bu makinede ölçüldü (olcum dalı, 26.09): Android 15'e göre %50 daha fazla kare
+      # (aynı kaydırmada 672 / 448), kare süresi 23 ms / 34 ms; 32-bit ARM uygulamalarını da çalıştırır.
+      SDK_IMG: "system-images;android-30;google_apis;x86_64"
       EKRAN_W: "720"
       EKRAN_H: "1560"
       EKRAN_DPI: "320"
@@ -79,11 +81,11 @@ jobs:
           if [ "$DAKIKA" -gt 330 ]; then DAKIKA=330; fi
           echo "DAKIKA=$DAKIKA" >> "$GITHUB_ENV"
 
-          # Makinenin tamamı: bütün çekirdekler, RAM'in yaklaşık yarısı (kalanı yazılım GPU + akış)
+          # Makinenin tamamı: bütün çekirdekler, RAM'in ~%75'i (16 GB → 12 GB; kalanı yazılım GPU + akış)
           CEKIRDEK=$(nproc)
           RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-          if   [ "$RAM_MB" -ge 14000 ]; then EMU_RAM=8192
-          elif [ "$RAM_MB" -ge 7000  ]; then EMU_RAM=4096
+          if   [ "$RAM_MB" -ge 15000 ]; then EMU_RAM=12288
+          elif [ "$RAM_MB" -ge 7000  ]; then EMU_RAM=5120
           else EMU_RAM=3072; fi
           echo "EMU_CORES=$CEKIRDEK" >> "$GITHUB_ENV"
           echo "EMU_RAM=$EMU_RAM"    >> "$GITHUB_ENV"
@@ -132,7 +134,10 @@ jobs:
           ayarla disk.dataPartition.size 6G
           ayarla hw.gpu.enabled yes
           ayarla hw.gpu.mode swiftshader_indirect
+          ayarla vm.heapSize 512
 
+          # swiftshader_indirect: bu makinede ölçüldü (olcum dalı, 26.09): swangle_indirect'e göre
+          # kaydırmada kare süresi 34 ms / 69 ms, takılan kare %22 / %93. Ekran kartı yokken en iyisi bu.
           nohup "$ANDROID_HOME/emulator/emulator" -avd dev -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-boot-anim -camera-back none -camera-front none \
             -cores "$EMU_CORES" -memory "$EMU_RAM" > /tmp/emulator.log 2>&1 &
@@ -154,6 +159,12 @@ jobs:
           "$ADB" shell cmd overlay enable com.android.internal.systemui.navbar.threebutton || true
           "$ADB" shell wm dismiss-keyguard || true
           echo "Android açıldı."
+
+          # Emülatöre (qemu'nun tüm iş parçacıklarına) işlemci önceliği ver; niceness Linux'ta iş parçacığı başınadır.
+          for p in $(pgrep -f 'qemu-system|emulator64|/emulator/emulator'); do
+            for t in /proc/"$p"/task/*; do sudo renice -n -10 -p "${t##*/}" > /dev/null 2>&1 || true; done
+          done
+          echo "Emülatör önceliği yükseltildi."
 
       - name: APK'ları kur
         run: |
@@ -185,6 +196,26 @@ jobs:
               *) echo "::warning::APK linki https:// ile başlamalı" ;;
             esac
           fi
+
+      - name: Performans hazırlığı
+        run: |
+          bash scripts/durum.sh pending "Performans hazırlığı"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          # Kurulan APK'ları tam önceden derle: yorumlama/JIT yerine derlenmiş kodla çalışsınlar.
+          for pkg in $("$ADB" shell pm list packages -3 | tr -d '\r' | sed 's/^package://'); do
+            echo "Derleniyor: $pkg"
+            timeout 180 "$ADB" shell cmd package compile -m speed -f "$pkg" > /dev/null 2>&1 \
+              || echo "::warning::Derlenemedi: $pkg"
+          done
+          # Açılıştan sonra Google hizmetleri ve dex2oat işlemciyi dolduruyor (ölçüldü: yük ~8-13).
+          # Zorla derletmek (bg-dexopt-job) ölçümde durumu kötüleştirdi; doğal olarak düşmesini bekle.
+          # Hedef: 1 dk yük ortalaması < 1,5 (en fazla 150 sn).
+          for i in $(seq 1 30); do
+            YUK=$("$ADB" shell cat /proc/loadavg | awk '{print $1}')
+            echo "Android yükü: $YUK"
+            if awk -v y="$YUK" 'BEGIN { exit !(y < 1.5) }'; then break; fi
+            sleep 5
+          done
 
       - name: Oturum sırları
         run: |
@@ -257,6 +288,9 @@ jobs:
             sleep 30
             if "$ADB" get-state > /dev/null 2>&1; then
               hata=0
+              # Performans kaydı: makine yükü + Android içinde en çok işlemci kullanan 3 süreç
+              echo "== $(date -u +%H:%M:%S) makine yükü: $(cut -d' ' -f1-3 /proc/loadavg) | boş RAM: $(free -m | awk '/^Mem:/{print $7}') MB"
+              "$ADB" shell top -b -n 1 -m 3 -o PID,%CPU,NAME 2>/dev/null | tail -n 3 | sed 's/^/   android: /' || true
             else
               hata=$((hata + 1))
               if [ "$hata" -ge 3 ]; then echo "::error::Android bağlantısı koptu"; exit 1; fi
