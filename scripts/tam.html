@@ -135,7 +135,12 @@
       if (e.type === 'touchstart') taniGonder('dokunma', e);
       var tuval = document.querySelector('.touch-layer');
       if (!tuval || !tuval.width || !tuval.height || !akis || akis.readyState !== 1) return;
-      var r = tuval.getBoundingClientRect();
+      // Konum, kullanıcının gördüğü video katmanına göre hesaplanır. WebKit'te (iPhone) parmağın hedefi
+      // dokunma katmanı değil video katmanı oluyor; uygulamanın işleyicisi bu yüzden her dokunmayı atıyordu
+      // (ölçüldü: dokunma-test dalı, WebKit iPhone 15 Plus). Burada hedefe bakılmaz.
+      var video = document.querySelector('.video-layer');
+      var r = video ? video.getBoundingClientRect() : null;
+      if (!r || !r.width || !r.height) r = tuval.getBoundingClientRect();
       if (!r.width || !r.height) return;
       var en = tuval.width, boy = tuval.height;                  // akışın video boyutu (scrcpy bununla eşleştirir)
       var baslangic = e.type === 'touchstart';
