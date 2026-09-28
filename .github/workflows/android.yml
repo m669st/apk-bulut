@@ -284,6 +284,7 @@ jobs:
         run: |
           ADB="$ANDROID_HOME/platform-tools/adb"
           hata=0
+          tani=0
           while [ "$(date +%s)" -lt "$BITIS" ]; do
             sleep 30
             if "$ADB" get-state > /dev/null 2>&1; then
@@ -291,6 +292,13 @@ jobs:
               # Performans kaydı: makine yükü + Android içinde en çok işlemci kullanan 3 süreç
               echo "== $(date -u +%H:%M:%S) makine yükü: $(cut -d' ' -f1-3 /proc/loadavg) | boş RAM: $(free -m | awk '/^Mem:/{print $7}') MB"
               "$ADB" shell top -b -n 1 -m 3 -o PID,%CPU,NAME 2>/dev/null | tail -n 3 | sed 's/^/   android: /' || true
+              # Dokunma tanısı (tam.html → kontrol.js, sır içermez): d=sayfaya gelen dokunma olayı,
+              # i=işaretçi olayı, g=Android'e giden dokunma, s=soket durumu (1=açık), c=video, r=ekrandaki boyut
+              yeni=$(grep -c ' tani ' /tmp/oturum/kontrol.log 2>/dev/null || true)
+              if [ "${yeni:-0}" -gt "$tani" ]; then
+                grep ' tani ' /tmp/oturum/kontrol.log | tail -n +"$((tani + 1))" | sed 's/^/   dokunma: /'
+                tani=$yeni
+              fi
             else
               hata=$((hata + 1))
               if [ "$hata" -ge 3 ]; then echo "::error::Android bağlantısı koptu"; exit 1; fi

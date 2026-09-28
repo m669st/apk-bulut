@@ -3,7 +3,10 @@
 //   GET /yon?a=<0|90|180|270>   telefonun yönü → emülatörün ivme sensörü (Android kendisi döner)
 //   GET /tus?k=<geri|ana|son>   gezinme tuşu
 //   GET /ekran?g=<720|540|432>  Android ekran çözünürlüğü (düşük = daha az çizim + kodlama yükü)
+//       &oran=<1.5–2.4>&dp=<320–480>  isteğe bağlı: ekranı telefonun oranına ve boyutuna uydur
+//       (boy = genişlik × oran; dp = Android arayüzünün genişliği, telefondaki CSS pikseline eşit)
 //   GET /anim?o=<0|0.5|1>       Android animasyon hızı (0 = kapalı)
+//   GET /tani?...               tam.html'in dokunma tanı özeti; yalnızca günlüğe yazılır (komut çalıştırmaz)
 // Kullanım: ADB=<adb yolu> SERIAL=<emulator-5554> node scripts/kontrol.js
 const http = require('http');
 const { execFile } = require('child_process');
@@ -39,10 +42,19 @@ function istekCoz(adres, serial) {
   if (u.pathname === '/ekran') {
     const g = u.searchParams.get('g');
     if (!Object.prototype.hasOwnProperty.call(EKRAN, g)) return null;
+    if (u.searchParams.has('oran') || u.searchParams.has('dp')) {
+      const oran = Number(u.searchParams.get('oran'));
+      const dp = Number(u.searchParams.get('dp'));
+      if (!(oran >= 1.5 && oran <= 2.4) || !(dp >= 320 && dp <= 480)) return null;
+      const en = g === '540' ? 536 : Number(g);              // scrcpy iki kenarı da 8'in katına indirir;
+      const boy = Math.round((en * oran) / 8) * 8;           // tam katı seçilince video piksel piksel aynı kalır
+      return [kabuk('wm', 'size', en + 'x' + boy), kabuk('wm', 'density', String(Math.round((en * 160) / dp)))];
+    }
     const e = EKRAN[g];
     if (!e) return [kabuk('wm', 'size', 'reset'), kabuk('wm', 'density', 'reset')];
     return [kabuk('wm', 'size', e[0]), kabuk('wm', 'density', e[1])];
   }
+  if (u.pathname === '/tani') return [];
   if (u.pathname === '/anim') {
     const o = u.searchParams.get('o');
     if (!['0', '0.5', '1'].includes(o)) return null;
@@ -72,8 +84,15 @@ if (require.main === module) {
     res.setHeader('Cache-Control', 'no-store');
     const komutlar = istekCoz(req.url, SERIAL);
     if (!komutlar) { res.statusCode = 400; res.end('gecersiz'); return; }
+    if (req.url.startsWith('/tani?')) {
+      // Günlük herkese açık olabilir: yalnızca beklenen karakterler, kısa.
+      let ozet = req.url.slice(6);
+      try { ozet = decodeURIComponent(ozet); } catch { /* bozuk kodlama: ham haliyle süzülür */ }
+      ozet = ozet.replace(/[^A-Za-z0-9=&x._ -]/g, '').slice(0, 200);
+      console.log(new Date().toISOString().slice(11, 19) + ' tani ' + ozet);
+    }
     // Aynı yön tekrar gelirse emülatörü boşuna meşgul etme.
-    const yon = komutlar[0][2] === 'emu' ? komutlar[0][6] : null;   // ['-s', seri, 'emu', ..., değer]
+    const yon = komutlar.length && komutlar[0][2] === 'emu' ? komutlar[0][6] : null;   // ['-s', seri, 'emu', ..., değer]
     if (yon && yon === sonYon) { res.end('ok'); return; }
     sirayla(komutlar, (hata) => {
       if (!hata && yon) sonYon = yon;

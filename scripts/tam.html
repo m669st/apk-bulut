@@ -2,18 +2,25 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Android</title>
 <!-- Kapı bu sayfayı /k/<sır>/tam.html adresinde sunar; göreli yollar da aynı önekin altından yüklenir. -->
 <link rel="stylesheet" href="ws-scrcpy.css">
 <style>
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
-  body { display: flex; touch-action: none; overscroll-behavior: none; }
+  body { display: flex; }
+  /* Tarayıcının kendi dokunma davranışları (yakınlaştırma, kaydırma, uzun basma menüsü, seçim) kapalı:
+     her dokunma Android'e gider. */
+  html, body, canvas { touch-action: none; overscroll-behavior: none; }
+  * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   body[data-embed-entry] .device-view { flex: 1; justify-content: center; }
   /* Gezinme tuşları başlatma sayfasının kendi çubuğunda; uygulamanın araç çubuğunu gizle. */
   .control-buttons-list { display: none !important; }
   .video { flex: 1; }
   .video-layer, .touch-layer { max-width: 100vw !important; max-height: 100vh !important; }
+  @supports (height: 100dvh) {
+    .video-layer, .touch-layer { max-width: 100dvw !important; max-height: 100dvh !important; }
+  }
   #status {
     position: fixed; top: 8px; left: 8px; z-index: 1000;
     font: 12px monospace; color: #ddd; background: rgba(0,0,0,.5);
@@ -22,22 +29,31 @@
   #status.hidden { display: none; }
 </style>
 <script>
-  // Akış soketi uygulamada her zaman köke ("/") açılır ve pathname ayarını yok sayar.
-  // Kapı ise yalnızca /k/<sır>/ altını geçirir. Bu sayfanın bulunduğu önek altına yönlendir.
   (function () {
+    // Akış soketi uygulamada her zaman köke ("/") açılır ve pathname ayarını yok sayar.
+    // Kapı ise yalnızca /k/<sır>/ altını geçirir. Bu sayfanın bulunduğu önek altına yönlendir.
     var onek = location.pathname.replace(/[^/]*$/, '');          // "/k/<sır>/"
+    var akis = null;                                             // görüntü + kontrol soketi
     function duzelt(adres) {
       var u = new URL(adres, location.href);
       if (u.host === location.host && u.pathname.indexOf(onek) !== 0) {
         u.pathname = onek + u.pathname.replace(/^\//, '');
       }
+      // Uygulama akışı pencere boyutuna küçültür (maxSize); telefonda 3 kat büyütülüp bulanık görünür.
+      // Android'in çözünürlüğü zaten görüntü ayarlarından seçiliyor, akış onu olduğu gibi taşısın.
+      if (u.searchParams.get('action') === 'stream') u.searchParams.delete('maxSize');
       return u.toString();
     }
     var AsilSoket = window.WebSocket;
     window.WebSocket = class extends AsilSoket {
       constructor(adres, protokoller) {
-        if (protokoller === undefined) super(duzelt(adres));
-        else super(duzelt(adres), protokoller);
+        var hedef = duzelt(adres);
+        if (protokoller === undefined) super(hedef);
+        else super(hedef, protokoller);
+        if (new URL(hedef).searchParams.get('action') === 'stream') {
+          akis = this;
+          this.addEventListener('open', function () { setTimeout(function () { taniGonder('baglandi', null); }, 3000); });
+        }
       }
     };
     // Uygulamanın kök API istekleri (ör. kilit ekranı durumu) de aynı önekten geçsin.
@@ -47,6 +63,132 @@
       if (girdi instanceof URL) return asilFetch(duzelt(girdi.toString()), secenek);
       return asilFetch(girdi, secenek);
     };
+
+    // ---- Dokunma ----
+    // Parmaklar uygulamanın işleyicisine bırakılmaz, doğrudan scrcpy dokunma mesajı olarak gönderilir.
+    // Uygulama basıncı Touch.force'tan alıyor; iPhone'da (3D Touch yok) bu hep 0 ve dokunmalar
+    // basınçsız gidiyor. Burada basınç sabit 1, konum ise akışın gerçek video boyutuna göre.
+    var KANAL_KONTROL = 2, TUR_DOKUNMA = 2;
+    var INDIR = 0, KALDIR = 1, KAYDIR = 2;
+    var EN_FAZLA_PARMAK = 10;
+    var parmaklar = new Map();                                   // Touch.identifier → { id, x, y }
+
+    // Kanal baytı + 32 baytlık scrcpy dokunma mesajı (tür, eylem, işaretçi[8], x, y, en, boy, basınç, düğmeler).
+    function dokunmaMesaji(eylem, id, x, y, en, boy, basinc) {
+      var b = new Uint8Array(33);
+      var v = new DataView(b.buffer);
+      b[0] = KANAL_KONTROL;
+      b[1] = TUR_DOKUNMA;
+      b[2] = eylem;
+      v.setUint32(3, 0);
+      v.setUint32(7, id);
+      v.setUint32(11, x);
+      v.setUint32(15, y);
+      v.setUint16(19, en);
+      v.setUint16(21, boy);
+      v.setUint16(23, basinc ? 0xffff : 0);
+      v.setUint32(25, 0);                                        // eylem düğmesi
+      v.setUint32(29, 0);                                        // düğmeler (parmakta yok)
+      return b;
+    }
+
+    function bosId() {
+      var kullanilan = new Set();
+      parmaklar.forEach(function (p) { kullanilan.add(p.id); });
+      for (var i = 0; i < EN_FAZLA_PARMAK; i++) if (!kullanilan.has(i)) return i;
+      return -1;
+    }
+
+    // ---- Tanı ----
+    // Telefonda dokunma sorunu olursa oturumun GitHub günlüğünden sebep görülebilsin: dokunma olayları sayfaya
+    // ulaşıyor mu, kaçı Android'e gitti, soket açık mı. Sır ya da kişisel bilgi içermez (kaba cihaz türü dışında).
+    var tani = { dokunma: 0, isaretci: 0, gonderilen: 0, son: {} };
+    function taniGonder(olay, e) {
+      var simdi = Date.now();
+      if (simdi - (tani.son[olay] || 0) < 4000) return;          // olay türü başına 4 sn'de bir
+      tani.son[olay] = simdi;
+      var c = document.querySelector('.touch-layer');
+      var t = e && e.changedTouches && e.changedTouches[0];
+      var ua = navigator.userAgent;
+      var q = new URLSearchParams({
+        o: olay,
+        d: String(tani.dokunma), i: String(tani.isaretci), g: String(tani.gonderilen),
+        s: String(akis ? akis.readyState : -1),
+        c: c ? c.width + 'x' + c.height : '-',
+        r: c ? Math.round(c.getBoundingClientRect().width) + 'x' + Math.round(c.getBoundingClientRect().height) : '-',
+        f: t && typeof t.force === 'number' ? t.force.toFixed(2) : '-',
+        h: e && e.target && e.target.className ? String(e.target.className).slice(0, 24) : '-',
+        p: /iPhone|iPad/.test(ua) ? 'ios' + ((/OS (\d+)_/.exec(ua) || [])[1] || '') : /Android/.test(ua) ? 'android' : 'masaustu',
+      });
+      try { fetch('_ctl/tani?' + q, { cache: 'no-store', keepalive: true }).catch(function () {}); } catch (x) { /* yok say */ }
+    }
+    window.addEventListener('pointerdown', function (e) {
+      tani.isaretci++;
+      if (e.pointerType !== 'mouse') taniGonder('isaretci', e);
+    }, true);
+
+    function dokunma(e) {
+      // Sayfada Android'den başka dokunulacak bir şey yok: tarayıcı hareketi de, uygulamanın kendi işleyicisi de devre dışı.
+      e.stopPropagation();
+      if (e.cancelable) e.preventDefault();
+      tani.dokunma++;
+      if (e.type === 'touchstart') taniGonder('dokunma', e);
+      var tuval = document.querySelector('.touch-layer');
+      if (!tuval || !tuval.width || !tuval.height || !akis || akis.readyState !== 1) return;
+      // Konum, kullanıcının gördüğü video katmanına göre hesaplanır. WebKit'te (iPhone) parmağın hedefi
+      // dokunma katmanı değil video katmanı oluyor; uygulamanın işleyicisi bu yüzden her dokunmayı atıyordu
+      // (ölçüldü: dokunma-test dalı, WebKit iPhone 15 Plus). Burada hedefe bakılmaz.
+      var video = document.querySelector('.video-layer');
+      var r = video ? video.getBoundingClientRect() : null;
+      if (!r || !r.width || !r.height) r = tuval.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      var en = tuval.width, boy = tuval.height;                  // akışın video boyutu (scrcpy bununla eşleştirir)
+      var baslangic = e.type === 'touchstart';
+      var bitis = e.type === 'touchend' || e.type === 'touchcancel';
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var t = e.changedTouches[i];
+        var x = Math.floor((t.clientX - r.left) * en / r.width);
+        var y = Math.floor((t.clientY - r.top) * boy / r.height);
+        var p = parmaklar.get(t.identifier);
+        if (baslangic) {
+          if (p || x < 0 || y < 0 || x >= en || y >= boy) continue;   // görüntünün dışındaki siyah alan
+          var id = bosId();
+          if (id < 0) continue;
+          p = { id: id, x: x, y: y };
+          parmaklar.set(t.identifier, p);
+          akis.send(dokunmaMesaji(INDIR, id, x, y, en, boy, true));
+          tani.gonderilen++;
+          continue;
+        }
+        if (!p) continue;
+        // Parmak görüntünün dışına kayarsa kenarda tut (kenardan kaydırma hareketleri kopmasın).
+        x = Math.min(Math.max(x, 0), en - 1);
+        y = Math.min(Math.max(y, 0), boy - 1);
+        if (bitis) {
+          parmaklar.delete(t.identifier);
+          akis.send(dokunmaMesaji(KALDIR, p.id, x, y, en, boy, false));
+        } else if (x !== p.x || y !== p.y) {
+          p.x = x; p.y = y;
+          akis.send(dokunmaMesaji(KAYDIR, p.id, x, y, en, boy, true));
+        }
+      }
+    }
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(function (tur) {
+      window.addEventListener(tur, dokunma, { capture: true, passive: false });
+    });
+    // Safari'nin iki parmakla yakınlaştırma ve çift dokunma yakınlaştırması.
+    ['gesturestart', 'gesturechange', 'gestureend', 'dblclick'].forEach(function (tur) {
+      window.addEventListener(tur, function (e) { e.preventDefault(); }, { capture: true, passive: false });
+    });
+    // Sekme arka plana giderken basılı kalan parmak Android'de takılı kalmasın.
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'hidden' || !akis || akis.readyState !== 1) return;
+      var tuval = document.querySelector('.touch-layer');
+      parmaklar.forEach(function (p) {
+        akis.send(dokunmaMesaji(KALDIR, p.id, p.x, p.y, tuval.width, tuval.height, false));
+      });
+      parmaklar.clear();
+    });
   })();
 </script>
 </head>
