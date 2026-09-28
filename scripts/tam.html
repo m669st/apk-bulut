@@ -50,7 +50,10 @@
         var hedef = duzelt(adres);
         if (protokoller === undefined) super(hedef);
         else super(hedef, protokoller);
-        if (new URL(hedef).searchParams.get('action') === 'stream') akis = this;
+        if (new URL(hedef).searchParams.get('action') === 'stream') {
+          akis = this;
+          this.addEventListener('open', function () { setTimeout(function () { taniGonder('baglandi', null); }, 3000); });
+        }
       }
     };
     // Uygulamanın kök API istekleri (ör. kilit ekranı durumu) de aynı önekten geçsin.
@@ -96,10 +99,40 @@
       return -1;
     }
 
+    // ---- Tanı ----
+    // Telefonda dokunma sorunu olursa oturumun GitHub günlüğünden sebep görülebilsin: dokunma olayları sayfaya
+    // ulaşıyor mu, kaçı Android'e gitti, soket açık mı. Sır ya da kişisel bilgi içermez (kaba cihaz türü dışında).
+    var tani = { dokunma: 0, isaretci: 0, gonderilen: 0, son: {} };
+    function taniGonder(olay, e) {
+      var simdi = Date.now();
+      if (simdi - (tani.son[olay] || 0) < 4000) return;          // olay türü başına 4 sn'de bir
+      tani.son[olay] = simdi;
+      var c = document.querySelector('.touch-layer');
+      var t = e && e.changedTouches && e.changedTouches[0];
+      var ua = navigator.userAgent;
+      var q = new URLSearchParams({
+        o: olay,
+        d: String(tani.dokunma), i: String(tani.isaretci), g: String(tani.gonderilen),
+        s: String(akis ? akis.readyState : -1),
+        c: c ? c.width + 'x' + c.height : '-',
+        r: c ? Math.round(c.getBoundingClientRect().width) + 'x' + Math.round(c.getBoundingClientRect().height) : '-',
+        f: t && typeof t.force === 'number' ? t.force.toFixed(2) : '-',
+        h: e && e.target && e.target.className ? String(e.target.className).slice(0, 24) : '-',
+        p: /iPhone|iPad/.test(ua) ? 'ios' + ((/OS (\d+)_/.exec(ua) || [])[1] || '') : /Android/.test(ua) ? 'android' : 'masaustu',
+      });
+      try { fetch('_ctl/tani?' + q, { cache: 'no-store', keepalive: true }).catch(function () {}); } catch (x) { /* yok say */ }
+    }
+    window.addEventListener('pointerdown', function (e) {
+      tani.isaretci++;
+      if (e.pointerType !== 'mouse') taniGonder('isaretci', e);
+    }, true);
+
     function dokunma(e) {
       // Sayfada Android'den başka dokunulacak bir şey yok: tarayıcı hareketi de, uygulamanın kendi işleyicisi de devre dışı.
       e.stopPropagation();
       if (e.cancelable) e.preventDefault();
+      tani.dokunma++;
+      if (e.type === 'touchstart') taniGonder('dokunma', e);
       var tuval = document.querySelector('.touch-layer');
       if (!tuval || !tuval.width || !tuval.height || !akis || akis.readyState !== 1) return;
       var r = tuval.getBoundingClientRect();
@@ -119,6 +152,7 @@
           p = { id: id, x: x, y: y };
           parmaklar.set(t.identifier, p);
           akis.send(dokunmaMesaji(INDIR, id, x, y, en, boy, true));
+          tani.gonderilen++;
           continue;
         }
         if (!p) continue;

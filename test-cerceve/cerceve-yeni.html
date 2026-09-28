@@ -1,0 +1,21 @@
+<!doctype html>
+<html class="oynatiyor">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Yeni başlatma sayfasının oynatıcı düzeni: tam ekran iframe + kayan menü düğmesi -->
+<style>
+  html, body { margin: 0; }
+  body { padding: 16px; min-height: 150vh; font: 16px sans-serif; }
+  html.oynatiyor, html.oynatiyor body { overflow: hidden; overscroll-behavior: none; }
+  #oynatici {
+    position: fixed; inset: 0; z-index: 9999; background: #000;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  #ekran { width: 100%; height: 100%; border: 0; display: block; background: #000; }
+  #menuBtn { position: fixed; right: 6px; top: 40%; width: 34px; height: 34px; border-radius: 50%; }
+</style>
+<p>başlatma sayfası</p>
+<div id="oynatici"><iframe id="ekran" allow="autoplay; fullscreen; clipboard-write"></iframe><button id="menuBtn">•••</button></div>
+<script>document.getElementById('ekran').src = decodeURIComponent(location.hash.slice(1));</script>
+</html>

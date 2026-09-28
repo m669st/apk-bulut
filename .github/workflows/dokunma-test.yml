@@ -90,22 +90,33 @@ jobs:
           "$ADB" shell wm size; "$ADB" shell wm density
 
       # Kapı yalnızca /tam.html sunar; eski ve yeni sayfa sırayla onun üzerine kopyalanır.
-      - name: "Ölçüm: eski sayfa (uygulamanın kendi dokunma işleyicisi)"
+      # Başlatma sayfası gibi başka origin'den (localhost:9000) iframe ile açılır.
+      - name: "Eski sayfa · WebKit iPhone · çerçeve"
         continue-on-error: true
         run: |
+          (cd test-cerceve && nohup python3 -m http.server 9000 > /tmp/http.log 2>&1 &)
+          sleep 1
           cp scripts/tam-eski.html /tmp/oturum/web/tam.html
-          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright \
-            timeout 300 node scripts/dokunma-olcum.js tam.html "ESKİ"
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright TARAYICI=webkit CERCEVE=eski             timeout 300 node scripts/dokunma-olcum.js "ESKİ·WebKit·çerçeve"
 
-      - name: "Ölçüm: yeni sayfa (doğrudan dokunma)"
+      - name: "Eski sayfa · Chrome iPhone · çerçeve"
+        continue-on-error: true
+        run: |
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright TARAYICI=chrome CERCEVE=eski             timeout 300 node scripts/dokunma-olcum.js "ESKİ·Chrome·çerçeve"
+
+      - name: "Yeni sayfa · WebKit iPhone · çerçeve"
         continue-on-error: true
         run: |
           cp scripts/tam.html /tmp/oturum/web/tam.html
-          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright \
-            timeout 300 node scripts/dokunma-olcum.js tam.html "YENİ"
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright TARAYICI=webkit CERCEVE=yeni             timeout 300 node scripts/dokunma-olcum.js "YENİ·WebKit·çerçeve"
 
-      - name: "Ölçüm: yeni sayfa, WebKit (iPhone 15 Plus)"
+      - name: "Yeni sayfa · Chrome iPhone · çerçeve"
         continue-on-error: true
         run: |
-          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright TARAYICI=webkit \
-            timeout 300 node scripts/dokunma-olcum.js tam.html "WEBKIT"
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright TARAYICI=chrome CERCEVE=yeni             timeout 300 node scripts/dokunma-olcum.js "YENİ·Chrome·çerçeve"
+
+      - name: Tanı kaydı
+        if: always()
+        run: |
+          grep ' tani ' /tmp/oturum/kontrol.log | tail -8 | while IFS= read -r l; do echo "::notice title=tanı kaydı::$l"; done || true
+          grep -v ' tani ' /tmp/oturum/kontrol.log | tail -5 || true
