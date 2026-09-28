@@ -3,6 +3,8 @@
 //   GET /yon?a=<0|90|180|270>   telefonun yönü → emülatörün ivme sensörü (Android kendisi döner)
 //   GET /tus?k=<geri|ana|son>   gezinme tuşu
 //   GET /ekran?g=<720|540|432>  Android ekran çözünürlüğü (düşük = daha az çizim + kodlama yükü)
+//       &oran=<1.5–2.4>&dp=<320–480>  isteğe bağlı: ekranı telefonun oranına ve boyutuna uydur
+//       (boy = genişlik × oran; dp = Android arayüzünün genişliği, telefondaki CSS pikseline eşit)
 //   GET /anim?o=<0|0.5|1>       Android animasyon hızı (0 = kapalı)
 // Kullanım: ADB=<adb yolu> SERIAL=<emulator-5554> node scripts/kontrol.js
 const http = require('http');
@@ -39,6 +41,14 @@ function istekCoz(adres, serial) {
   if (u.pathname === '/ekran') {
     const g = u.searchParams.get('g');
     if (!Object.prototype.hasOwnProperty.call(EKRAN, g)) return null;
+    if (u.searchParams.has('oran') || u.searchParams.has('dp')) {
+      const oran = Number(u.searchParams.get('oran'));
+      const dp = Number(u.searchParams.get('dp'));
+      if (!(oran >= 1.5 && oran <= 2.4) || !(dp >= 320 && dp <= 480)) return null;
+      const en = g === '540' ? 536 : Number(g);              // scrcpy iki kenarı da 8'in katına indirir;
+      const boy = Math.round((en * oran) / 8) * 8;           // tam katı seçilince video piksel piksel aynı kalır
+      return [kabuk('wm', 'size', en + 'x' + boy), kabuk('wm', 'density', String(Math.round((en * 160) / dp)))];
+    }
     const e = EKRAN[g];
     if (!e) return [kabuk('wm', 'size', 'reset'), kabuk('wm', 'density', 'reset')];
     return [kabuk('wm', 'size', e[0]), kabuk('wm', 'density', e[1])];

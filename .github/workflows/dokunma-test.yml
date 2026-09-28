@@ -1,0 +1,111 @@
+name: Dokunma testi
+
+# Geçici ölçüm (dokunma-test dalı): iPhone gibi force=0 dokunmalar Android'e ulaşıyor mu?
+on:
+  push:
+    branches: [dokunma-test]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  olcum:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SDK_IMG: "system-images;android-30;google_apis;x86_64"
+      WSW_IMAGE: "bilbospocketses/ws-scrcpy-web:0.1.30-beta.131"
+      ANDROID_AVD_HOME: /home/runner/.android/avd
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Hazırlık
+        run: |
+          mkdir -p /tmp/oturum
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          docker pull -q "$WSW_IMAGE" > /tmp/docker-pull.log 2>&1 &
+          (mkdir -p /tmp/pw && cd /tmp/pw && npm init -y > /dev/null && npm i -s playwright@1 > /tmp/pw.log 2>&1 \
+            && npx playwright install --with-deps webkit >> /tmp/pw.log 2>&1) &
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install emulator platform-tools "$SDK_IMG" > /tmp/sdk.log 2>&1 || { tail -50 /tmp/sdk.log; exit 1; }
+          wait
+
+      - name: Android
+        run: |
+          AVDM="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$AVDM" create avd -n dev -k "$SDK_IMG" --force > /dev/null
+          CFG="$ANDROID_AVD_HOME/dev.avd/config.ini"
+          ayarla() { sed -i "/^$1=/d" "$CFG"; echo "$1=$2" >> "$CFG"; }
+          ayarla hw.lcd.width 720; ayarla hw.lcd.height 1560; ayarla hw.lcd.density 320
+          ayarla hw.ramSize 12288; ayarla hw.cpu.ncore "$(nproc)"; ayarla hw.keyboard yes; ayarla hw.mainKeys no
+          ayarla hw.gpu.enabled yes; ayarla hw.gpu.mode swiftshader_indirect; ayarla vm.heapSize 512
+          nohup "$ANDROID_HOME/emulator/emulator" -avd dev -no-window -gpu swiftshader_indirect \
+            -no-snapshot -no-boot-anim -camera-back none -camera-front none \
+            -cores "$(nproc)" -memory 12288 > /tmp/emulator.log 2>&1 &
+          timeout 300 "$ADB" wait-for-device
+          for i in $(seq 1 200); do
+            [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 3
+          done
+          "$ADB" shell settings put global window_animation_scale 0.5
+          "$ADB" shell settings put global transition_animation_scale 0.5
+          "$ADB" shell settings put global animator_duration_scale 0.5
+          "$ADB" shell svc power stayon true
+          "$ADB" shell settings put system screen_off_timeout 2147483647
+          "$ADB" shell cmd overlay enable com.android.internal.systemui.navbar.threebutton || true
+          "$ADB" shell wm dismiss-keyguard || true
+          for i in $(seq 1 24); do
+            YUK=$("$ADB" shell cat /proc/loadavg | awk '{print $1}'); echo "yük $YUK"
+            awk -v y="$YUK" 'BEGIN { exit !(y < 2.5) }' && break
+            sleep 5
+          done
+
+      - name: Akış + kapı
+        run: |
+          umask 077
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          openssl rand -base64 16 | tr '+/' '-_' | tr -d '=\r\n' > /tmp/oturum/sir
+          mkdir -p /tmp/wsdata
+          echo '{"adbPath":"/sdk-pt/adb","firstRunComplete":true,"autoUpdate":false}' > /tmp/wsdata/config.json
+          docker run -d --name wsw --network host -v /tmp/wsdata:/data \
+            -v "$ANDROID_HOME/platform-tools:/sdk-pt:ro" "$WSW_IMAGE" > /dev/null
+          for i in $(seq 1 90); do curl -fs -o /dev/null http://127.0.0.1:8000/api/config && break; sleep 2; done
+          curl -sI http://127.0.0.1:8000/ | tr -d '\r' | sed -n 's/.*ws_scrcpy_token=\([0-9a-f]\{64\}\).*/\1/p' | head -1 > /tmp/oturum/wsw_token
+          test -s /tmp/oturum/wsw_token
+          ADB="$ADB" SERIAL=emulator-5554 nohup node scripts/kontrol.js > /tmp/oturum/kontrol.log 2>&1 &
+          bash scripts/kapi.sh 8000
+          # iPhone 15 Plus ana ekran uygulaması alanı (430x839) → launcher'ın gönderdiği ölçü
+          sleep 1
+          curl -fs "http://127.0.0.1:8001/ekran?g=540&oran=1.951&dp=430"; echo
+          "$ADB" shell wm size; "$ADB" shell wm density
+
+      # Kapı yalnızca /tam.html sunar; eski ve yeni sayfa sırayla onun üzerine kopyalanır.
+      - name: "Ölçüm: eski sayfa (uygulamanın kendi dokunma işleyicisi)"
+        continue-on-error: true
+        run: |
+          cp scripts/tam-eski.html /tmp/oturum/web/tam.html
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright \
+            timeout 300 node scripts/dokunma-olcum.js tam.html "ESKİ"
+
+      - name: "Ölçüm: yeni sayfa (doğrudan dokunma)"
+        continue-on-error: true
+        run: |
+          cp scripts/tam.html /tmp/oturum/web/tam.html
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright \
+            timeout 300 node scripts/dokunma-olcum.js tam.html "YENİ"
+
+      - name: "Ölçüm: yeni sayfa, WebKit (iPhone 15 Plus)"
+        continue-on-error: true
+        run: |
+          ADB="$ANDROID_HOME/platform-tools/adb" PW_YOL=/tmp/pw/node_modules/playwright TARAYICI=webkit \
+            timeout 300 node scripts/dokunma-olcum.js tam.html "WEBKIT"
