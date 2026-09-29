@@ -7,6 +7,7 @@
 //       (boy = genişlik × oran; dp = Android arayüzünün genişliği, telefondaki CSS pikseline eşit)
 //   GET /anim?o=<0|0.5|1>       Android animasyon hızı (0 = kapalı)
 //   GET /tani?...               tam.html'in dokunma tanı özeti; yalnızca günlüğe yazılır (komut çalıştırmaz)
+//   /kayit/...                  oyun kaydı (Telegram): bkz. scripts/kayit.js
 // Kullanım: ADB=<adb yolu> SERIAL=<emulator-5554> node scripts/kontrol.js
 const http = require('http');
 const { execFile } = require('child_process');
@@ -69,6 +70,14 @@ if (require.main === module) {
   const ADB = process.env.ADB;
   const SERIAL = process.env.SERIAL;
   let sonYon = null;
+  const { Kayit, AdbCihaz, kayitIstegi } = require('./kayit');
+  const saat = () => new Date().toISOString().slice(11, 19);
+  const kayit = new Kayit(new AdbCihaz(ADB, SERIAL), { tgTaban: process.env.TG_API, gunluk: (s) => console.log(saat() + ' ' + s) });
+  // Otomatik kayıt: 15 dakikada bir; geri yükleme bitmiş olmalı, değişiklik yoksa hiçbir şey gönderilmez.
+  setInterval(() => {
+    const d = kayit.durum();
+    if (d.ayarli && d.geriYuklendi && !d.islem) kayit.kaydet();
+  }, 15 * 60 * 1000);
 
   // Komutları sırayla çalıştırır; ilk hatada durur.
   function sirayla(komutlar, bitti) {
@@ -82,6 +91,7 @@ if (require.main === module) {
   http.createServer((req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
+    if (req.url.startsWith('/kayit/')) { kayitIstegi(kayit, req, res); return; }
     const komutlar = istekCoz(req.url, SERIAL);
     if (!komutlar) { res.statusCode = 400; res.end('gecersiz'); return; }
     if (req.url.startsWith('/tani?')) {

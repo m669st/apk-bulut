@@ -52,7 +52,31 @@ function sifrele(token, sifre, repo, cift = anahtarCifti()) {
     veri: veri.toString('base64'),
   };
 }
-module.exports = { sifrele, anahtarCifti };
+// sifrele'nin tersi (Node): şifre yanlışsa null.
+function coz(yapi, sifre) {
+  try {
+    const anahtar = crypto.pbkdf2Sync(sifre, Buffer.from(yapi.salt, 'base64'), yapi.iter, 32, 'sha256');
+    const veri = Buffer.from(yapi.veri, 'base64');
+    const d = crypto.createDecipheriv('aes-256-gcm', anahtar, Buffer.from(yapi.iv, 'base64'));
+    d.setAuthTag(veri.subarray(veri.length - 16));
+    return JSON.parse(Buffer.concat([d.update(veri.subarray(0, veri.length - 16)), d.final()]).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// Mevcut config.js'teki şifreli yapı. Oyun kayıtlarının şifre anahtarı buradaki anahtar çiftinden
+// türetildiği için jeton yenilenirken çift korunmalı; yoksa Telegram'daki eski kayıtlar açılamaz.
+function mevcutYapi() {
+  try {
+    const m = /window\.APK_BULUT = (\{[\s\S]*\});/.exec(fs.readFileSync(CIKTI, 'utf8'));
+    return m ? JSON.parse(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { sifrele, coz, anahtarCifti };
 
 async function gh(yol, token) {
   const res = await fetch('https://api.github.com' + yol, {
@@ -90,7 +114,19 @@ if (require.main === module) (async () => {
   const tekrar = await sor('Şifreyi tekrar yaz: ', true);
   if (sifre !== tekrar) { console.error('Şifreler aynı değil.'); process.exit(1); }
 
-  const icerik = 'window.APK_BULUT = ' + JSON.stringify(sifrele(token, sifre, repo), null, 2) + ';\n';
+  let cift = null;
+  const eski = mevcutYapi();
+  if (eski) {
+    let acik = coz(eski, sifre);
+    if (!acik) acik = coz(eski, await sor('Eski site şifresi (oyun kayıtları açılabilsin diye; bilmiyorsan boş bırak): ', true));
+    if (acik && acik.k && acik.p) {
+      cift = { jwk: acik.k, pub: acik.p };
+      console.log('Mevcut anahtar korundu: eski oyun kayıtları açılmaya devam eder.');
+    } else {
+      console.log("UYARI: Eski anahtar açılamadı, yenisi üretiliyor. Telegram'daki eski oyun kayıtları açılamayacak.");
+    }
+  }
+  const icerik = 'window.APK_BULUT = ' + JSON.stringify(sifrele(token, sifre, repo, cift || anahtarCifti()), null, 2) + ';\n';
   fs.writeFileSync(CIKTI, icerik);
   console.log('Yazıldı: ' + CIKTI);
 })();

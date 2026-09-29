@@ -285,6 +285,7 @@ jobs:
           ADB="$ANDROID_HOME/platform-tools/adb"
           hata=0
           tani=0
+          notlar=0
           while [ "$(date +%s)" -lt "$BITIS" ]; do
             sleep 30
             if "$ADB" get-state > /dev/null 2>&1; then
@@ -296,7 +297,14 @@ jobs:
               # i=işaretçi olayı, g=Android'e giden dokunma, s=soket durumu (1=açık), c=video, r=ekrandaki boyut
               yeni=$(grep -c ' tani ' /tmp/oturum/kontrol.log 2>/dev/null || true)
               if [ "${yeni:-0}" -gt "$tani" ]; then
-                grep ' tani ' /tmp/oturum/kontrol.log | tail -n +"$((tani + 1))" | sed 's/^/   dokunma: /'
+                # İlk satırlar "not" olarak da yazılır (adım başına 10 not sınırı): Actions sayfasında
+                # ve API'de oturum açmadan okunabilir, telefondaki sorun uzaktan görülebilir.
+                grep ' tani ' /tmp/oturum/kontrol.log | tail -n +"$((tani + 1))" | while IFS= read -r satir; do
+                  echo "   dokunma: $satir"
+                  if [ "$notlar" -lt 9 ]; then echo "::notice title=dokunma::$satir"; fi
+                  notlar=$((notlar + 1))
+                done
+                notlar=$(( notlar + yeni - tani ))
                 tani=$yeni
               fi
             else
@@ -308,7 +316,14 @@ jobs:
 
       - name: Kapanış
         if: always()
-        run: bash scripts/durum.sh error "Oturum bitti" || true
+        run: |
+          # Oyun kaydı (Telegram): başlatma sayfası bağlandıysa son durumu kaydet. Ayarlar yalnızca kontrol
+          # sunucusunun belleğinde; bağlanılmadıysa 409 döner ve hiçbir şey yapılmaz. Çıktıda sır yok.
+          SONUC=$(curl -s -m 280 "http://127.0.0.1:8001/kayit/kaydet?bekle=1" 2>/dev/null || true)
+          if [ -n "$SONUC" ]; then
+            echo "$SONUC" | jq -r '"Oyun kaydı: " + (.sonuc.mesaj // .hata // "—")' 2>/dev/null || true
+          fi
+          bash scripts/durum.sh error "Oturum bitti" || true
 
       # Yalnızca gizli bilgi içermeyen günlükler (tünel/kapı/VNC günlükleri /tmp/oturum'da kalır).
       - name: Günlükleri kaydet
