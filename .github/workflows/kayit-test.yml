@@ -1,0 +1,65 @@
+name: Kayıt testi
+
+# Geçici ölçüm (kayit-test dalı): oyun kaydı gerçek Android'de kaydedilip geri yükleniyor mu?
+on:
+  push:
+    branches: [kayit-test]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  olcum:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SDK_IMG: "system-images;android-30;google_apis;x86_64"
+      ANDROID_AVD_HOME: /home/runner/.android/avd
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Hazırlık
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install emulator platform-tools "$SDK_IMG" > /tmp/sdk.log 2>&1 || { tail -50 /tmp/sdk.log; exit 1; }
+
+      - name: Android
+        run: |
+          AVDM="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$AVDM" create avd -n dev -k "$SDK_IMG" --force > /dev/null
+          CFG="$ANDROID_AVD_HOME/dev.avd/config.ini"
+          ayarla() { sed -i "/^$1=/d" "$CFG"; echo "$1=$2" >> "$CFG"; }
+          ayarla hw.lcd.width 720; ayarla hw.lcd.height 1560; ayarla hw.lcd.density 320
+          ayarla hw.ramSize 12288; ayarla hw.cpu.ncore "$(nproc)"; ayarla hw.keyboard yes; ayarla hw.mainKeys no
+          ayarla disk.dataPartition.size 6G
+          ayarla hw.gpu.enabled yes; ayarla hw.gpu.mode swiftshader_indirect; ayarla vm.heapSize 512
+          nohup "$ANDROID_HOME/emulator/emulator" -avd dev -no-window -gpu swiftshader_indirect \
+            -no-snapshot -no-boot-anim -camera-back none -camera-front none \
+            -cores "$(nproc)" -memory 12288 > /tmp/emulator.log 2>&1 &
+          timeout 300 "$ADB" wait-for-device
+          for i in $(seq 1 200); do
+            [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 3
+          done
+          "$ADB" shell svc power stayon true
+          "$ADB" shell wm dismiss-keyguard || true
+
+      - name: Kayıt ölçümü
+        run: bash test/kayit-olcum.sh
+
+      - name: Günlükler
+        if: always()
+        run: |
+          echo "--- kontrol"; tail -40 /tmp/kontrol.log 2>/dev/null || true
+          echo "--- telegram"; tail -5 /tmp/tg.log 2>/dev/null || true
